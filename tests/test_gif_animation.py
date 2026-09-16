@@ -70,7 +70,11 @@ def _stub_ha_modules():
     sys.modules.setdefault("homeassistant.helpers.template", template_mod)
 
 
-_stub_ha_modules()
+try:  # real HA from requirements-test.txt must win; never shadow it
+    import homeassistant.core  # noqa: F401
+    import homeassistant.helpers.template  # noqa: F401
+except ImportError:  # no HA available: stub the surface for the synthetic load
+    _stub_ha_modules()
 _gif = _load_module("_gif", PIXOO64_DIR / "_gif.py")
 _load_module("_colors", PIXOO64_DIR / "_colors.py")
 _load_module("_font", PIXOO64_DIR / "_font.py")
@@ -180,6 +184,7 @@ class TestPushAnimation(unittest.TestCase):
         frames = [cmd for cmd in commands if cmd["Command"] == "Draw/SendHttpGif"]
         self.assertEqual(3, len(frames))  # failed frame + retry + frame 2
         self.assertEqual([0, 0, 1], [cmd["PicOffset"] for cmd in frames])
+
     def test_push_animation_paces_frames(self, m):
         m.post("/post", json={"error_code": 0, "PicId": 0})
         pixoo = Pixoo(IP_ADDRESS)
@@ -231,20 +236,29 @@ class TestPushAnimation(unittest.TestCase):
         kinds = [(cmd["Command"], cmd.get("PicNum")) for cmd in commands]
         # Partial animation (1/2) re-pushes the first frame as a static page.
         self.assertEqual(("Draw/SendHttpGif", 1), kinds[-1])
+
+
 @requests_mock.Mocker()
 class TestExtractFrames(unittest.TestCase):
+
     def test_static_image_yields_one_frame(self, m):
         img = Image.new("RGB", (8, 8), (255, 0, 0))
         frames, speed = extract_frames(img)
         self.assertEqual(1, len(frames))
         self.assertEqual(200, speed)
 
+    def test_unsized_static_frame_survives_source_close(self, m):
+        img = Image.new("RGB", (8, 8), (255, 0, 0))
+        frames, _ = extract_frames(img)
+        img.close()  # sensor closes the source after decode; frame must live on
+        self.assertEqual((255, 0, 0), frames[0].convert("RGB").getpixel((0, 0)))
+
     def test_animated_gif_yields_all_frames_with_mean_delay(self, m):
         img = make_gif([(255, 0, 0), (0, 255, 0), (0, 0, 255)],
-                       durations=[100, 200, 300])
+                       durations=[100, 200, 400])
         frames, speed = extract_frames(img)
         self.assertEqual(3, len(frames))
-        self.assertEqual(200, speed)  # mean of 100/200/300
+        self.assertEqual(233, speed)  # mean of 100/200/400, not the 200 default
 
     def test_speed_override_wins_and_clamps(self, m):
         img = make_gif([(255, 0, 0), (0, 255, 0)], durations=[100, 100])

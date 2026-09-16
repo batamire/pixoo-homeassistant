@@ -64,13 +64,12 @@ def extract_frames(img, width=None, height=None, resample_mode=Image.BOX,
     def apply_sizing(frame):
         if width and height:
             return frame.resize((width, height), resample_mode)
+        sized = frame.copy()
         if width or height:
-            sized = frame.copy()
             sized.thumbnail((100 if not width else width,
                              100 if not height else height),
                             resample_mode)
-            return sized
-        return frame
+        return sized
 
     try:
         frame_count = getattr(img, "n_frames", 1) or 1
@@ -89,13 +88,14 @@ def extract_frames(img, width=None, height=None, resample_mode=Image.BOX,
             img.seek(index)
         except EOFError:
             break
+        frame = img.copy()  # triggers load, publishing this frame's duration (WebP)
         try:
             delay = int(img.info.get("duration", 0) or 0)
         except (TypeError, ValueError):
             delay = 0
         if delay > 0:
             delays.append(delay)
-        frames.append(apply_sizing(img.copy()))
+        frames.append(apply_sizing(frame))
 
     if frame_count > MAX_ANIMATION_FRAMES:
         _LOGGER.warning("Truncating animated image from %s to %s frames.",

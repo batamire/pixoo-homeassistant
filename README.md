@@ -171,8 +171,10 @@ Example
 Animated images (GIF/WebP/APNG) inside a `components` page animate in place:
 every frame of the source is composited with the rest of the page (text,
 rectangles, static images) and pushed as one looping animation, so static
-content stays still while the image moves. At most 20 frames are pushed per
-draw; longer sources are truncated.
+content stays still while the image moves. At most 32 frames are pushed per
+draw; longer sources are truncated. Frames post one at a time with a short
+pause (~150 ms), so a 30-frame animation takes a few seconds; if a push is
+interrupted, the first frame is re-sent as a static image.
 ```yaml
     - type: image
       position: [0, 0]

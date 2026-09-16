@@ -15,21 +15,22 @@ must eyeball the display for motion (see prompts).
 import argparse
 import base64
 import json
+import os
 import sys
 import urllib.request
 from io import BytesIO
 from pathlib import Path
 
+try:
+    from PIL import Image, ImageDraw
+except ImportError:
+    print("need Pillow: pip install pillow")
+    sys.exit(2)
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "custom_components" / "divoom_pixoo" / "pixoo64"))
 
 from _gif import extract_frames  # noqa: E402
-
-try:
-    from PIL import Image, ImageDraw
-except ImportError:
-    print("need Pillow: pip install pillow requests")
-    sys.exit(2)
 
 
 def post(host, payload):
@@ -72,7 +73,7 @@ def send_animation(host, buffers, speed_ms, pic_id=1):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--host", default="192.168.1.8")
+    ap.add_argument("--host", default=os.environ.get("PIXOO_HOST", "192.168.1.8"))
     ap.add_argument("--skip-device", action="store_true")
     args = ap.parse_args()
 

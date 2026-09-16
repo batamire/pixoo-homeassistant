@@ -18,7 +18,7 @@ from urllib3.exceptions import NewConnectionError
 
 from . import Pixoo
 from .pixoo64._colors import get_rgb, CSS4_COLORS, render_color
-from .pixoo64._gif import clamp_pic_speed, extract_frames
+from .pixoo64._gif import MAX_ANIMATION_FRAMES, clamp_pic_speed, extract_frames
 from .const import DOMAIN, VERSION
 from .pages._pages import special_pages
 from .pixoo64._font import FONT_PICO_8, FONT_GICKO, FIVE_PIX, ELEVEN_PIX, CLOCK, PIX24
@@ -193,7 +193,9 @@ class Pixoo64(Entity):
 
             components: list = page['components'].copy()  # Copy the list so we can add new items to it.
             # Animated image components are composited below, after the static
-            # pass: (position, frames, resample_mode) tuples, plus the page-level speed.
+            # pass. Frame cache is per render: templated sources may change
+            # between renders, so reset before the loop, not only for animation.
+            self._image_frame_cache = {}
             animated_images = []
             animation_speed_ms = clamp_pic_speed(None)
             for index, component in enumerate(components):
@@ -235,11 +237,7 @@ class Pixoo64(Entity):
                         _LOGGER.error("Template render error: %s", e)
 
             if animated_images:
-                self._image_frame_cache = {}
-                try:
-                    self._render_animated_page(pixoo, components, rendered_variables, animation_speed_ms)
-                finally:
-                    self._image_frame_cache = {}
+                self._render_animated_page(pixoo, components, rendered_variables, animation_speed_ms)
             else:
                 pixoo.push()
 
@@ -256,7 +254,7 @@ class Pixoo64(Entity):
                 frames = self._peek_image_frames(component, rendered_variables)
                 if len(frames) > 1:
                     frame_count = max(frame_count, len(frames))
-        frame_count = min(frame_count, 32)
+        frame_count = min(frame_count, MAX_ANIMATION_FRAMES)
         frames = []
         for frame_index in range(frame_count):
             pixoo.clear()
@@ -330,6 +328,7 @@ class Pixoo64(Entity):
                 animation_speed = None
 
             try:
+                img.load()  # fully decode so returned frames survive img.close()
                 frames, pic_speed = extract_frames(img, width, height, resample_mode, animation_speed)
             finally:
                 try:
