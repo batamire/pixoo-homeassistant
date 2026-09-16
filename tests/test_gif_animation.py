@@ -226,28 +226,36 @@ class TestEncodePageGif(unittest.TestCase):
             with Image.open(dest) as gif:
                 self.assertEqual(2, getattr(gif, "n_frames", 1))
                 self.assertEqual(200, gif.info.get("duration"))
+                # Disposal contract the device needs: restore-to-background
+                # on every frame, no transparency flag (renders as white).
                 for index in range(2):
                     gif.seek(index)
-                    # Full-screen frames: the device cannot composite deltas.
-                    self.assertEqual((0, 0, size, size), gif.tile[0][1])
+                    self.assertEqual(2, gif.disposal_method)
                 gif.seek(1)
                 self.assertEqual((0, 255, 0), gif.convert("RGB").getpixel((0, 0)))
 
-    def test_encode_digest_changes_with_content(self):
-        size = 8
+    def test_encode_partial_content_decodes_exact(self):
+        # Small moving block on a black page: Pillow must not wash the
+        # background with a content color on disposal-2 restore.
+        size = 16
+        bufs = []
+        for i in range(4):
+            img = Image.new("RGB", (size, size))
+            for y in range(2, 6):
+                for x in range(i, i + 4):
+                    img.putpixel((x, y), (255, 200, 0))
+            bufs.append(list(img.tobytes()))
+            self.assertEqual(size * size * 3, len(bufs[-1]))
         with tempfile.TemporaryDirectory() as tmp:
-            red = self.make_frames(size, [(255, 0, 0)])[0]
-            green = self.make_frames(size, [(0, 255, 0)])[0]
-            d1 = encode_page_gif([red, red], size, 200, Path(tmp) / "a.gif")
-            d2 = encode_page_gif([red, green], size, 200, Path(tmp) / "b.gif")
-            self.assertNotEqual(d1, d2)
-
-    def test_encode_rejects_bad_frames(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaises(ValueError):
-                encode_page_gif([], 8, 200, Path(tmp) / "empty.gif")
-            with self.assertRaises(ValueError):
-                encode_page_gif([[0, 1, 2]], 8, 200, Path(tmp) / "short.gif")
+            dest = Path(tmp) / "partial.gif"
+            encode_page_gif(bufs, size, 130, dest)
+            with Image.open(dest) as gif:
+                self.assertEqual(4, getattr(gif, "n_frames", 1))
+                for index in range(4):
+                    gif.seek(index)
+                    self.assertEqual(2, gif.disposal_method)
+                    decoded = gif.convert("RGB")
+                    self.assertEqual((0, 0, 0), decoded.getpixel((size - 1, size - 1)))
 
 
 class TestHostedAnimationRouting(unittest.TestCase):

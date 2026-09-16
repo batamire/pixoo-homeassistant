@@ -116,13 +116,17 @@ def encode_page_gif(frames, size, pic_speed_ms, dest_path):
     """Encode composited RGB buffers as one looping GIF for hosted playback.
 
     ``frames`` are raw RGB buffers (``size*size*3`` ints) as returned by
-    :meth:`Pixoo.get_buffer`. Every frame is stored full-screen with
-    ``disposal=2`` (restore to background): the delta/diff encoding Pillow
-    uses by default writes partial regions that the device composites
-    wrongly, flashing borders and repaint squares around the animated area.
-    The file is written atomically (tmp + replace) so the device never
-    fetches a partial download. Returns an 8-char content hash for
-    cache-busting query strings.
+    :meth:`Pixoo.get_buffer`. Frames use ``disposal=2`` (restore to
+    background): Pillow's default delta encoding writes partial regions
+    with ``disposal=0`` that the device composites wrongly, flashing
+    borders and repaint squares around the animated area. ``background``
+    points the GIF background index at black so disposal-2 restores
+    repaint in black instead of a page content color, and
+    ``optimize=False`` keeps Pillow from tagging transparent pixels the
+    device renders as white specks (both verified byte-exact in Pillow
+    and ffmpeg decodes). The file is written atomically (tmp + replace)
+    so the device never fetches a partial download. Returns an 8-char
+    content hash for cache-busting query strings.
     """
     expected = size * size * 3
     if not frames:
@@ -140,6 +144,6 @@ def encode_page_gif(frames, size, pic_speed_ms, dest_path):
     tmp_path = str(dest_path) + ".tmp"
     images[0].save(tmp_path, format="GIF", save_all=True,
                    append_images=images[1:], duration=pic_speed_ms, loop=0,
-                   disposal=2)
+                   disposal=2, background=(0, 0, 0), optimize=False)
     os.replace(tmp_path, str(dest_path))
     return digest
