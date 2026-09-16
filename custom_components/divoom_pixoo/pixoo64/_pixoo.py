@@ -434,14 +434,25 @@ class Pixoo:
             self.__error(data)
 
     def play_gif(self, gif_url):
-        response = requests.post(self.__url, json.dumps({
-            'Command': 'Device/PlayTFGif',
-            'FileType': 2,
-            'FileName': gif_url
-        }), timeout=self.timeout)
-        data = response.json()
-        if data['error_code'] != 0:
+        """Play a hosted GIF via ``Device/PlayTFGif`` (FileType 2 URL).
+
+        Returns True when the device ACKs with ``error_code`` 0. Callers
+        fall back to :meth:`push_animation` on False.
+        """
+        try:
+            response = requests.post(self.__url, json.dumps({
+                'Command': 'Device/PlayTFGif',
+                'FileType': 2,
+                'FileName': gif_url
+            }), timeout=self.timeout)
+            data = response.json()
+        except (requests.RequestException, ConnectionError, TimeoutError, ValueError) as exc:
+            _LOGGER.warning("PlayTFGif %s failed (%s); falling back.", gif_url, exc)
+            return False
+        if data.get('error_code') != 0:
             self.__error(data)
+            return False
+        return True
 
     def set_face(self, face_id):
         self.set_clock(face_id)

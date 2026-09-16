@@ -4,6 +4,7 @@ import logging
 from asyncio import Task
 from datetime import timedelta
 from io import BytesIO
+from pathlib import Path
 
 import requests
 import voluptuous as vol
@@ -14,16 +15,22 @@ from homeassistant.helpers import entity_platform, config_validation as cv
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.template import Template, TemplateError
+from homeassistant.helpers.network import get_url
 from urllib3.exceptions import NewConnectionError
 
 from . import Pixoo
 from .pixoo64._colors import get_rgb, CSS4_COLORS, render_color
-from .pixoo64._gif import extract_frames
+from .pixoo64._gif import encode_page_gif, extract_frames
 from .const import DOMAIN, VERSION
 from .pages._pages import special_pages
 from .pixoo64._font import FONT_PICO_8, FONT_GICKO, FIVE_PIX, ELEVEN_PIX, CLOCK, PIX24
 
 _LOGGER = logging.getLogger(__name__)
+
+# Subdirectory of ``hass.config.path("www")`` holding composited page
+# animations. Served unauthenticated at ``/local/pixoo_pages/``; the
+# device fetches the file itself via ``Device/PlayTFGif``.
+HOSTED_PAGES_DIRNAME = "pixoo_pages"
 
 
 async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry, async_add_entities):
@@ -205,14 +212,18 @@ class Pixoo64(Entity):
                     except TemplateError as e:
                         _LOGGER.error("Template render error: %s", e)
 
-            self._render_components(pixoo, components, rendered_variables)
+            self._render_components(pixoo, components, rendered_variables, self._current_page_index)
 
-    def _render_components(self, pixoo, components, rendered_variables):
-        """Composite the page once per animation frame, then push it.
+    def _render_components(self, pixoo, components, rendered_variables, page_index=-1):
+        """Composite the page once per animation frame, then show it.
 
         Every component replays for each frame, so later components paint over
-        earlier ones exactly like a static page. A page without animated images
-        renders a single frame, which ``push_animation`` sends statically.
+        earlier ones exactly like a static page. Multi-frame pages are
+        encoded as one GIF under ``www/`` and played via ``Device/PlayTFGif``
+        so the display never shows the HttpGif buffering screen; a failed
+        hosted play falls back to :meth:`Pixoo.push_animation`. A page
+        without animated images renders a single frame, which
+        ``push_animation`` sends statically.
         """
         frame_count = 1
         pic_speed = None
@@ -230,7 +241,41 @@ class Pixoo64(Entity):
                 self._draw_component_frame(pixoo, component, rendered_variables, frame_index)
             rendered.append(pixoo.get_buffer())
         pixoo.clear()
+        if len(rendered) > 1:
+            self._play_hosted_animation(pixoo, rendered, pic_speed, page_index)
+            return
         pixoo.push_animation(rendered, pic_speed)
+
+    def _play_hosted_animation(self, pixoo, rendered, pic_speed, page_index=-1):
+        """Serve ``rendered`` buffers as a GIF and play it on the device.
+
+        Falls back to :meth:`Pixoo.push_animation` when hosting or playback
+        fails, so the page still animates (with the buffering screen) rather
+        than freezing on the previous page.
+        """
+        try:
+            base_url = get_url(self.hass, allow_external=False)
+        except Exception as exc:  # misconfigured internal URL
+            _LOGGER.warning("Hosted animation unavailable (%s); pushing frames.", exc)
+            pixoo.push_animation(rendered, pic_speed)
+            return
+        if base_url.startswith("https://"):
+            # Device-side cloud fetch over TLS is unproven; stay on pixels.
+            _LOGGER.debug("Hosted animation skipped for https base URL; pushing frames.")
+            pixoo.push_animation(rendered, pic_speed)
+            return
+        try:
+            www_dir = Path(self.hass.config.path("www")) / HOSTED_PAGES_DIRNAME
+            www_dir.mkdir(parents=True, exist_ok=True)
+            dest = www_dir / f"page_{page_index}.gif"
+            digest = encode_page_gif(rendered, pixoo.size, pic_speed, dest)
+            gif_url = f"{base_url}/local/{HOSTED_PAGES_DIRNAME}/{dest.name}?v={digest}"
+        except Exception as exc:
+            _LOGGER.warning("Hosted animation encode failed (%s); pushing frames.", exc)
+            pixoo.push_animation(rendered, pic_speed)
+            return
+        if not pixoo.play_gif(gif_url):
+            pixoo.push_animation(rendered, pic_speed)
 
     def _load_image_frames(self, component, rendered_variables):
         """Decode an image component into (frames, pic_speed, resample_mode).

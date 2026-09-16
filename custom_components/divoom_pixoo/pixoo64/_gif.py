@@ -1,14 +1,16 @@
 """Helpers for animated images inside ``components`` pages.
 
-A components page is composited into full-screen 64x64 buffers and pushed with
-``Draw/SendHttpGif``. When an ``image`` component source holds several frames
-(animated GIF/WebP/PNG), the whole page is rendered once per frame and pushed
-as one multi-frame animation via :meth:`Pixoo.push_animation`. Static page
-content is baked into every frame, so it stays still while the animated part
-moves. A single-frame image keeps the exact historical code path.
+A components page is composited into full-screen buffers and served as one
+looping GIF under ``www/`` for ``Device/PlayTFGif`` playback, so the display
+never shows the HttpGif buffering screen. When an ``image`` component source
+holds several frames (animated GIF/WebP/PNG), the whole page is rendered once
+per frame with static content baked into every frame, so it stays still while
+the animated part moves.
 """
 
+import hashlib
 import logging
+import os
 
 from PIL import Image
 
@@ -109,3 +111,30 @@ def extract_frames(img, width=None, height=None, resample_mode=Image.BOX,
     else:
         pic_speed = DEFAULT_PIC_SPEED_MS
     return frames, pic_speed
+
+def encode_page_gif(frames, size, pic_speed_ms, dest_path):
+    """Encode composited RGB buffers as one looping GIF for hosted playback.
+
+    ``frames`` are raw RGB buffers (``size*size*3`` ints) as returned by
+    :meth:`Pixoo.get_buffer`. The file is written atomically (tmp +
+    replace) so the device never fetches a partial download. Returns an
+    8-char content hash for cache-busting query strings.
+    """
+    expected = size * size * 3
+    if not frames:
+        raise ValueError("encode_page_gif needs at least one frame")
+    for frame in frames:
+        if len(frame) != expected:
+            raise ValueError(
+                f"frame holds {len(frame)} values, expected {expected}")
+    pic_speed_ms = clamp_pic_speed(pic_speed_ms)
+    images = [Image.frombytes("RGB", (size, size), bytes(frame))
+              for frame in frames]
+    digest = hashlib.md5(
+        b"".join(bytes(frame) for frame in frames)
+        + str(pic_speed_ms).encode()).hexdigest()[:8]
+    tmp_path = str(dest_path) + ".tmp"
+    images[0].save(tmp_path, format="GIF", save_all=True,
+                   append_images=images[1:], duration=pic_speed_ms, loop=0)
+    os.replace(tmp_path, str(dest_path))
+    return digest

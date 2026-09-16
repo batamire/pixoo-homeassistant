@@ -170,11 +170,11 @@ Example
 
 Animated images (GIF/WebP/APNG) inside a `components` page animate in place:
 every frame of the source is composited with the rest of the page (text,
-rectangles, static images) and pushed as one looping animation, so static
-content stays still while the image moves. At most 32 frames are pushed per
-draw; longer sources are truncated. Frames post one at a time with a short
-pause (~150 ms), so a 30-frame animation takes a few seconds; if a push is
-interrupted, the first frame is re-sent as a static image.
+rectangles, static images) into one looping GIF served from
+`www/pixoo_pages/page_<index>.gif` and played via `Device/PlayTFGif`, so the
+display swaps atomically with no HttpGif buffering screen. At most 32 frames
+are encoded per draw; longer sources are truncated. If hosting or playback
+fails, the page falls back to multi-frame `SendHttpGif`.
 ```yaml
     - type: image
       position: [0, 0]

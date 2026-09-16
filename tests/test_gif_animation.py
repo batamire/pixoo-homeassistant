@@ -1,7 +1,9 @@
 import base64
 import json
+import tempfile
 import unittest
 from io import BytesIO
+from pathlib import Path
 from unittest import mock
 
 import requests_mock
@@ -10,6 +12,7 @@ from PIL import Image
 from custom_components.divoom_pixoo.pixoo64._gif import (
     MAX_ANIMATION_FRAMES,
     clamp_pic_speed,
+    encode_page_gif,
     extract_frames,
 )
 from custom_components.divoom_pixoo.pixoo64 import _pixoo as _pixoo_mod
@@ -168,6 +171,135 @@ class TestPushAnimation(unittest.TestCase):
         # Partial animation (1/2) re-pushes the first frame as a static page.
         self.assertEqual(("Draw/SendHttpGif", 1), kinds[-1])
 
+
+@requests_mock.Mocker()
+class TestPlayGif(unittest.TestCase):
+    def make_pixoo(self, m):
+        pixoo = Pixoo(IP_ADDRESS)
+        m.reset_mock()  # drop the GetHttpGifId handshake from __init__
+        return pixoo
+
+    def test_play_gif_returns_true_on_ack(self, m):
+        m.post("/post", json={"error_code": 0, "PicId": 0})
+        pixoo = self.make_pixoo(m)
+
+        self.assertTrue(pixoo.play_gif("http://ha:8123/local/pixoo_pages/page_0.gif"))
+        commands = posted_commands(m)
+        self.assertEqual(1, len(commands))
+        self.assertEqual("Device/PlayTFGif", commands[0]["Command"])
+        self.assertEqual(2, commands[0]["FileType"])
+
+    def test_play_gif_returns_false_on_error_code(self, m):
+        m.post("/post", [
+            {"json": {"error_code": 0, "PicId": 0}},  # __init__ handshake
+            {"json": {"error_code": 7}},
+        ])
+        pixoo = Pixoo(IP_ADDRESS)
+        m.reset_mock()
+
+        self.assertFalse(pixoo.play_gif("http://ha:8123/local/pixoo_pages/page_0.gif"))
+
+    def test_play_gif_returns_false_on_transport_error(self, m):
+        m.post("/post", [
+            {"json": {"error_code": 0, "PicId": 0}},  # __init__ handshake
+            {"exc": ConnectionResetError(104, "Connection reset by peer")},
+        ])
+        pixoo = Pixoo(IP_ADDRESS)
+        m.reset_mock()
+
+        self.assertFalse(pixoo.play_gif("http://ha:8123/local/pixoo_pages/page_0.gif"))
+
+
+class TestEncodePageGif(unittest.TestCase):
+    def make_frames(self, size, colors):
+        return [[c for pixel in [color] * (size * size) for c in pixel]
+                for color in colors]
+
+    def test_encode_roundtrip_preserves_frames_and_speed(self):
+        size = 8
+        frames = self.make_frames(size, [(255, 0, 0), (0, 255, 0)])
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "page_0.gif"
+            digest = encode_page_gif(frames, size, 200, dest)
+            self.assertEqual(8, len(digest))
+            self.assertTrue(dest.exists())
+            with Image.open(dest) as gif:
+                self.assertEqual(2, getattr(gif, "n_frames", 1))
+                self.assertEqual(200, gif.info.get("duration"))
+                gif.seek(1)
+                self.assertEqual((0, 255, 0), gif.convert("RGB").getpixel((0, 0)))
+
+    def test_encode_digest_changes_with_content(self):
+        size = 8
+        with tempfile.TemporaryDirectory() as tmp:
+            red = self.make_frames(size, [(255, 0, 0)])[0]
+            green = self.make_frames(size, [(0, 255, 0)])[0]
+            d1 = encode_page_gif([red, red], size, 200, Path(tmp) / "a.gif")
+            d2 = encode_page_gif([red, green], size, 200, Path(tmp) / "b.gif")
+            self.assertNotEqual(d1, d2)
+
+    def test_encode_rejects_bad_frames(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ValueError):
+                encode_page_gif([], 8, 200, Path(tmp) / "empty.gif")
+            with self.assertRaises(ValueError):
+                encode_page_gif([[0, 1, 2]], 8, 200, Path(tmp) / "short.gif")
+
+
+class TestHostedAnimationRouting(unittest.TestCase):
+    def make_entity(self, www_dir):
+        from unittest.mock import Mock
+        import custom_components.divoom_pixoo.sensor as sensor_mod
+        hass = Mock()
+
+        def fake_path(*parts):
+            return str(Path(www_dir).joinpath(*parts))
+        hass.config.path.side_effect = fake_path
+        pixoo = Mock()
+        pixoo.size = 8
+        config_entry = Mock()
+        config_entry.options = {"pages_data": [], "scan_interval": 15}
+        entity = sensor_mod.Pixoo64(pixoo=pixoo, config_entry=config_entry)
+        entity.hass = hass
+        entity._current_page_index = 0
+        return sensor_mod, entity, pixoo
+
+    def test_hosted_play_used_for_multi_frame(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sensor_mod, entity, pixoo = self.make_entity(tmp)
+            red = [255, 0, 0] * 64
+            green = [0, 255, 0] * 64
+            pixoo.play_gif.return_value = True
+            with mock.patch.object(sensor_mod, "get_url",
+                                   return_value="http://192.168.1.190:8123"):
+                entity._play_hosted_animation(pixoo, [red, green], 200, 0)
+            pixoo.play_gif.assert_called_once()
+            url = pixoo.play_gif.call_args[0][0]
+            self.assertIn("http://192.168.1.190:8123/local/pixoo_pages/page_0.gif?v=", url)
+            pixoo.push_animation.assert_not_called()
+            self.assertTrue((Path(tmp) / "www" / "pixoo_pages" / "page_0.gif").exists())
+
+    def test_fallback_to_push_on_play_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sensor_mod, entity, pixoo = self.make_entity(tmp)
+            red = [255, 0, 0] * 64
+            green = [0, 255, 0] * 64
+            pixoo.play_gif.return_value = False
+            with mock.patch.object(sensor_mod, "get_url",
+                                   return_value="http://192.168.1.190:8123"):
+                entity._play_hosted_animation(pixoo, [red, green], 200, 0)
+            pixoo.push_animation.assert_called_once()
+
+    def test_fallback_to_push_on_https_base(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sensor_mod, entity, pixoo = self.make_entity(tmp)
+            red = [255, 0, 0] * 64
+            green = [0, 255, 0] * 64
+            with mock.patch.object(sensor_mod, "get_url",
+                                   return_value="https://home.example.com"):
+                entity._play_hosted_animation(pixoo, [red, green], 200, 0)
+            pixoo.play_gif.assert_not_called()
+            pixoo.push_animation.assert_called_once()
 
 class TestExtractFrames(unittest.TestCase):
 
