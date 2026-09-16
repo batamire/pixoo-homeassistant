@@ -199,130 +199,32 @@ class Pixoo64(Entity):
             for index, component in enumerate(components):
 
                 if component['type'] == "text":
-                    try:
-                        rendered_text = str(Template(str(component['content']), self.hass).async_render(variables=rendered_variables))
-                    except TemplateError as e:
-                        _LOGGER.error("Template render error: %s", e)
-                        rendered_text = "Template Error"
-
-                    font_name = component.get('font', "").lower()
-                    if font_name == "gicko":
-                        font = FONT_GICKO
-                    elif font_name == "five_pix":
-                        font = FIVE_PIX
-                    elif font_name == "eleven_pix":
-                        font = ELEVEN_PIX
-                    elif font_name == "clock":
-                        font = CLOCK
-                    elif font_name == "pix24":
-                        font = PIX24
-                    else:
-                        font = FONT_PICO_8  # Font by default.
-
-                    rendered_color = render_color(component.get('color'), self.hass, variables=rendered_variables)
-
-                    align = component.get('align', "").lower()
-
-                    pixoo.draw_text(rendered_text.upper(), tuple(component['position']), rendered_color, font, align)
+                    self._draw_text_component(pixoo, component, rendered_variables)
 
                 elif component['type'] == "image":
+                    frames, pic_speed, resample_mode = self._load_image_frames(component, rendered_variables)
+                    if not frames:
+                        continue
                     try:
-                        if "image_path" in component:
-                            # File
-                            rendered_image_path = Template(str(component['image_path']), self.hass).async_render(variables=rendered_variables)
-                            img = Image.open(rendered_image_path)
-                        elif "image_url" in component:
-                            # URL/Web
-                            rendered_image_path = Template(str(component['image_url']), self.hass).async_render(variables=rendered_variables)
-                            response = requests.get(rendered_image_path, timeout=pixoo.timeout)
-                            img = Image.open(BytesIO(response.content))
-                        elif "image_data" in component:
-                            # Base64
-                            # Use a website like https://base64.guru/converter/encode/image to encode the image.
-                            rendered_image_data = Template(str(component['image_data']), self.hass).async_render(variables=rendered_variables)
-                            img = Image.open(BytesIO(base64.b64decode(rendered_image_data)))
-                        else:
-                            continue
-
-                        # If neither width nor height is set, the image will be displayed in its original size.
-                        # (If too big, it's handled in the _pixoo class)
-
-                        # You can "see" the difference here: https://i.stack.imgur.com/bKlzT.png
-                        rendered_resample_mode = str(Template(str(component.get('resample_mode', "box")), self.hass).async_render(variables=rendered_variables)).lower()
-                        if rendered_resample_mode == "nearest" or rendered_resample_mode == "pixel_art":
-                            resample_mode = Image.NEAREST
-                        elif rendered_resample_mode == "bilinear":
-                            resample_mode = Image.BILINEAR
-                        elif rendered_resample_mode == "hamming":
-                            resample_mode = Image.HAMMING
-                        elif rendered_resample_mode == "bicubic":
-                            resample_mode = Image.BICUBIC
-                        elif rendered_resample_mode == "antialias" or rendered_resample_mode == "lanczos":
-                            resample_mode = Image.LANCZOS
-                        else:
-                            resample_mode = Image.BOX
-
-                        width = component.get('width')
-                        height = component.get('height')
-                        try:
-                            animation_speed = component.get('animation_speed')
-                            animation_speed = None if animation_speed is None else int(animation_speed)
-                        except (TypeError, ValueError):
-                            animation_speed = None
-
-                        frames, pic_speed = extract_frames(img, width, height, resample_mode, animation_speed)
-                        try:
-                            position = tuple(component['position'])
-                            if len(frames) > 1:
-                                # Animated source: defer compositing to the per-frame
-                                # pass below so the whole page (text included) is
-                                # baked into every pushed frame.
-                                animated_images.append((position, frames, resample_mode))
-                                if animation_speed is not None:
-                                    animation_speed_ms = pic_speed
-                                elif animation_speed_ms == clamp_pic_speed(None):
-                                    animation_speed_ms = pic_speed
-                            else:
-                                pixoo.draw_image(frames[0], position, image_resample_mode=resample_mode)
-                        finally:
-                            try:
-                                img.close()
-                            except Exception:
-                                pass
-                    except TemplateError as e:
-                        _LOGGER.error("Template render error: %s", e)
-                    except NewConnectionError as e:
-                        _LOGGER.error("Connection error: %s", e)
-                    except TimeoutError as e:
-                        _LOGGER.error("Timeout error: %s", e)
+                        animation_speed = component.get('animation_speed')
+                        animation_speed = None if animation_speed is None else int(animation_speed)
+                    except (TypeError, ValueError):
+                        animation_speed = None
+                    if len(frames) > 1:
+                        # Animated source: the replay pass below draws every
+                        # layer in z-order per frame. Only record presence and
+                        # speed here; drawing frame 0 now would be discarded.
+                        animated_images.append(True)
+                        if animation_speed is not None:
+                            animation_speed_ms = pic_speed
+                        elif animation_speed_ms == clamp_pic_speed(None):
+                            animation_speed_ms = pic_speed
+                    else:
+                        pixoo.draw_image(frames[0], tuple(component['position']),
+                                         image_resample_mode=resample_mode)
 
                 elif component['type'] == "rectangle":
-                    try:
-                        rendered_color = render_color(component.get('color'), self.hass, variables=rendered_variables)
-
-                        position = [
-                            int(Template(str(position), self.hass).async_render(variables=rendered_variables)) for position in
-                            component['position']
-                        ]
-                        size = [
-                            int(Template(str(size), self.hass).async_render(variables=rendered_variables)) for size in
-                            component['size']
-                        ]
-
-                        size = (size[0] - 1, size[1] - 1)
-
-                        rendered_fill = bool(Template(str(component.get('filled', True)), self.hass).async_render(variables=rendered_variables))
-
-                        if rendered_fill:
-                            pixoo.draw_filled_rectangle(position, (position[0] + size[0], position[1] + size[1]), rendered_color)
-                        else:
-                            pixoo.draw_line(position, (position[0] + size[0], position[1]), rendered_color)
-                            pixoo.draw_line((position[0] + size[0], position[1]), (position[0] + size[0], position[1] + size[1]), rendered_color)
-                            pixoo.draw_line((position[0] + size[0], position[1] + size[1]), (position[0], position[1] + size[1]), rendered_color)
-                            pixoo.draw_line((position[0], position[1] + size[1]), position, rendered_color)
-
-                    except TemplateError as e:
-                        _LOGGER.error("Template render error: %s", e)
+                    self._draw_rectangle_component(pixoo, component, rendered_variables)
                 elif component["type"] == "templatable":
                     try:
                         rendered_list = list(Template(str(component.get("template", [])), self.hass).async_render(variables=rendered_variables))
@@ -333,23 +235,188 @@ class Pixoo64(Entity):
                         _LOGGER.error("Template render error: %s", e)
 
             if animated_images:
-                self._render_animated_page(pixoo, animated_images, animation_speed_ms)
+                self._image_frame_cache = {}
+                try:
+                    self._render_animated_page(pixoo, components, rendered_variables, animation_speed_ms)
+                finally:
+                    self._image_frame_cache = {}
             else:
                 pixoo.push()
 
-    def _render_animated_page(self, pixoo, animated_images, pic_speed):
-        """Re-render the whole page per animation frame and push it as one loop."""
-        frame_count = min(len(frames) for _, frames, _ in animated_images)
-        static_buffer = pixoo.get_buffer()
+    def _render_animated_page(self, pixoo, components, rendered_variables, pic_speed):
+        """Replay every component per frame so text/rectangles draw OVER the animation.
+
+        ``components`` is the full ordered component list. Static components
+        replay identically each frame; animated image components draw frame N.
+        Later components paint over earlier ones, exactly like the static page.
+        """
+        frame_count = 1
+        for component in components:
+            if component.get('type') == "image":
+                frames = self._peek_image_frames(component, rendered_variables)
+                if len(frames) > 1:
+                    frame_count = max(frame_count, len(frames))
+        frame_count = min(frame_count, 32)
         frames = []
         for frame_index in range(frame_count):
-            pixoo.set_buffer(static_buffer)
-            for position, gif_frames, resample_mode in animated_images:
-                pixoo.draw_image(gif_frames[frame_index % len(gif_frames)], position,
-                                 image_resample_mode=resample_mode)
+            pixoo.clear()
+            for component in components:
+                self._draw_component_frame(pixoo, component, rendered_variables, frame_index)
             frames.append(pixoo.get_buffer())
-        pixoo.set_buffer(static_buffer)
+        pixoo.clear()
         pixoo.push_animation(frames, pic_speed)
+
+    def _load_image_frames(self, component, rendered_variables):
+        """Decode an image component into (frames, pic_speed, resample_mode).
+
+        Frames are cached per render: the animated replay pass calls this once
+        per frame index, but the file/URL is only fetched and decoded on the
+        first call. Returns ([], None, resample) when the component has no
+        usable source.
+        """
+        cache = getattr(self, "_image_frame_cache", None)
+        if cache is None:
+            cache = self._image_frame_cache = {}
+        key = id(component)
+        if key in cache:
+            return cache[key]
+        result = self._decode_image_frames(component, rendered_variables)
+        cache[key] = result
+        return result
+
+    def _decode_image_frames(self, component, rendered_variables):
+        try:
+            if "image_path" in component:
+                # File
+                rendered_image_path = Template(str(component['image_path']), self.hass).async_render(variables=rendered_variables)
+                img = Image.open(rendered_image_path)
+            elif "image_url" in component:
+                # URL/Web
+                rendered_image_path = Template(str(component['image_url']), self.hass).async_render(variables=rendered_variables)
+                response = requests.get(rendered_image_path, timeout=self._pixoo.timeout)
+                img = Image.open(BytesIO(response.content))
+            elif "image_data" in component:
+                # Base64
+                # Use a website like https://base64.guru/converter/encode/image to encode the image.
+                rendered_image_data = Template(str(component['image_data']), self.hass).async_render(variables=rendered_variables)
+                img = Image.open(BytesIO(base64.b64decode(rendered_image_data)))
+            else:
+                return [], None, Image.BOX
+
+            # If neither width nor height is set, the image will be displayed in its original size.
+            # (If too big, it's handled in the _pixoo class)
+
+            # You can "see" the difference here: https://i.stack.imgur.com/bKlzT.png
+            rendered_resample_mode = str(Template(str(component.get('resample_mode', "box")), self.hass).async_render(variables=rendered_variables)).lower()
+            if rendered_resample_mode == "nearest" or rendered_resample_mode == "pixel_art":
+                resample_mode = Image.NEAREST
+            elif rendered_resample_mode == "bilinear":
+                resample_mode = Image.BILINEAR
+            elif rendered_resample_mode == "hamming":
+                resample_mode = Image.HAMMING
+            elif rendered_resample_mode == "bicubic":
+                resample_mode = Image.BICUBIC
+            elif rendered_resample_mode == "antialias" or rendered_resample_mode == "lanczos":
+                resample_mode = Image.LANCZOS
+            else:
+                resample_mode = Image.BOX
+
+            width = component.get('width')
+            height = component.get('height')
+            try:
+                animation_speed = component.get('animation_speed')
+                animation_speed = None if animation_speed is None else int(animation_speed)
+            except (TypeError, ValueError):
+                animation_speed = None
+
+            try:
+                frames, pic_speed = extract_frames(img, width, height, resample_mode, animation_speed)
+            finally:
+                try:
+                    img.close()
+                except Exception:
+                    pass
+            return frames, pic_speed, resample_mode
+        except TemplateError as e:
+            _LOGGER.error("Template render error: %s", e)
+        except NewConnectionError as e:
+            _LOGGER.error("Connection error: %s", e)
+        except TimeoutError as e:
+            _LOGGER.error("Timeout error: %s", e)
+        return [], None, Image.BOX
+
+    def _peek_image_frames(self, component, rendered_variables):
+        """Decode an image component's frames without drawing (for frame counting)."""
+        return self._load_image_frames(component, rendered_variables)[0]
+
+    def _draw_text_component(self, pixoo, component, rendered_variables):
+        try:
+            rendered_text = str(Template(str(component['content']), self.hass).async_render(variables=rendered_variables))
+        except TemplateError as e:
+            _LOGGER.error("Template render error: %s", e)
+            rendered_text = "Template Error"
+
+        font_name = component.get('font', "").lower()
+        if font_name == "gicko":
+            font = FONT_GICKO
+        elif font_name == "five_pix":
+            font = FIVE_PIX
+        elif font_name == "eleven_pix":
+            font = ELEVEN_PIX
+        elif font_name == "clock":
+            font = CLOCK
+        elif font_name == "pix24":
+            font = PIX24
+        else:
+            font = FONT_PICO_8  # Font by default.
+
+        rendered_color = render_color(component.get('color'), self.hass, variables=rendered_variables)
+
+        align = component.get('align', "").lower()
+
+        pixoo.draw_text(rendered_text.upper(), tuple(component['position']), rendered_color, font, align)
+
+    def _draw_rectangle_component(self, pixoo, component, rendered_variables):
+        try:
+            rendered_color = render_color(component.get('color'), self.hass, variables=rendered_variables)
+
+            position = [
+                int(Template(str(position), self.hass).async_render(variables=rendered_variables)) for position in
+                component['position']
+            ]
+            size = [
+                int(Template(str(size), self.hass).async_render(variables=rendered_variables)) for size in
+                component['size']
+            ]
+
+            size = (size[0] - 1, size[1] - 1)
+
+            rendered_fill = bool(Template(str(component.get('filled', True)), self.hass).async_render(variables=rendered_variables))
+
+            if rendered_fill:
+                pixoo.draw_filled_rectangle(position, (position[0] + size[0], position[1] + size[1]), rendered_color)
+            else:
+                pixoo.draw_line(position, (position[0] + size[0], position[1]), rendered_color)
+                pixoo.draw_line((position[0] + size[0], position[1]), (position[0] + size[0], position[1] + size[1]), rendered_color)
+                pixoo.draw_line((position[0] + size[0], position[1] + size[1]), (position[0], position[1] + size[1]), rendered_color)
+                pixoo.draw_line((position[0], position[1] + size[1]), position, rendered_color)
+
+        except TemplateError as e:
+            _LOGGER.error("Template render error: %s", e)
+
+    def _draw_component_frame(self, pixoo, component, rendered_variables, frame_index):
+        """Draw one component for animation frame N (static layers ignore N)."""
+        component_type = component.get('type')
+        if component_type == "text":
+            self._draw_text_component(pixoo, component, rendered_variables)
+        elif component_type == "rectangle":
+            self._draw_rectangle_component(pixoo, component, rendered_variables)
+        elif component_type == "image":
+            frames, _, resample_mode = self._load_image_frames(component, rendered_variables)
+            if not frames:
+                return
+            pixoo.draw_image(frames[frame_index % len(frames)], tuple(component['position']),
+                             image_resample_mode=resample_mode)
 
     # Service to show a message.
     async def async_show_message(self, page_data: dict, duration: int = -1):
