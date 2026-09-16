@@ -98,6 +98,13 @@ You can also set the duration of a page in seconds. This will override the scan 
 ```
 > [!NOTE]
 > The enabled tag and duration tag only apply when used in the configuration. Therefore, they won't word in the service.
+>
+> [!IMPORTANT]
+> Components pages render once per rotation entry: text like
+> `{{ now().strftime('%H:%M') }}` bakes into the page as pixels and stays
+> frozen for the whole duration. A 180 s page shows a clock up to 3 minutes
+> old. For minute-fresh clocks, repeat the page as identical 60 s entries
+> (e.g. three in a row for ~180 s of presence) - each rotation re-renders.
 
 ## Page: Components
 A components page  turns your Pixoo into your canvas!  You can tie multiple text/image configs to a single page.
