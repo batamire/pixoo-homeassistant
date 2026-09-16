@@ -1,13 +1,10 @@
 """Rerunnable live-device probe for multi-frame components animation.
 
-Replays the sibling session's verified probes plus the new integration path:
 1. contract control - 3 solid-colour frames, PicNum 3, shared PicID, 600 ms
 2. real shape - 8 composited sun+text frames, PicNum 8, 200 ms
 3. static control - PicNum 1 single frame (must render static)
-4. fork path - Pixoo.push_animation() + extract_frames() wire format check
-   against a mock, no device traffic
 
-Usage: PIXOO_HOST=192.168.1.8 python3 scripts/probe_gif_animation.py [--skip-device]
+Usage: PIXOO_HOST=192.168.1.8 python3 scripts/probe_gif_animation.py
 Prints exact commands + raw responses. error_code 0 is NOT proof - the user
 must eyeball the display for motion (see prompts).
 """
@@ -18,19 +15,12 @@ import json
 import os
 import sys
 import urllib.request
-from io import BytesIO
-from pathlib import Path
 
 try:
     from PIL import Image, ImageDraw
 except ImportError:
     print("need Pillow: pip install pillow")
     sys.exit(2)
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT / "custom_components" / "divoom_pixoo" / "pixoo64"))
-
-from _gif import extract_frames  # noqa: E402
 
 
 def post(host, payload):
@@ -74,24 +64,9 @@ def send_animation(host, buffers, speed_ms, pic_id=1):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default=os.environ.get("PIXOO_HOST", "192.168.1.8"))
-    ap.add_argument("--skip-device", action="store_true")
     args = ap.parse_args()
 
-    print("== fork wire-format check (no device) ==")
-    gif = BytesIO()
-    frames = [Image.new("RGB", (8, 8), c) for c in ((255, 0, 0), (0, 255, 0))]
-    frames[0].save(gif, format="GIF", save_all=True, append_images=frames[1:],
-                   duration=200, loop=0)
-    gif.seek(0)
-    out, speed = extract_frames(__import__("PIL.Image", fromlist=["open"]).open(gif))
-    print(f"extract_frames -> {len(out)} frames, PicSpeed {speed} ms")
-    assert len(out) == 2 and speed == 200, "wire-format check failed"
-    print("wire-format OK: 2 frames, mean delay 200 ms")
-
-    if args.skip_device:
-        return
-
-    print("\n== probe 1: contract control (3 solids, 600 ms) ==")
+    print("== probe 1: contract control (3 solids, 600 ms) ==")
     send_animation(args.host, [frame_buffer(solid(c)) for c in
                                ((255, 0, 0), (0, 255, 0), (0, 0, 255))], 600)
     input("EYEBALL: display cycling R->G->B? [Enter] ")

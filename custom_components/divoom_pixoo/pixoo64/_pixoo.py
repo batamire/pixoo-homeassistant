@@ -9,6 +9,7 @@ from PIL import Image, ImageOps
 
 from ._colors import get_rgb
 from ._font import retrieve_glyph, retrieve_glyph_width, FONT_GICKO, FONT_PICO_8, FIVE_PIX, ELEVEN_PIX, CLOCK, PIX24
+from ._gif import clamp_pic_speed
 
 import logging
 _LOGGER = logging.getLogger(__name__)
@@ -301,10 +302,6 @@ class Pixoo:
         """Return a copy of the current raw RGB buffer (size*size*3 ints)."""
         return list(self.__buffer)
 
-    def set_buffer(self, buffer):
-        """Replace the current raw RGB buffer (must hold size*size*3 ints)."""
-        self.__buffer = list(buffer)
-
     def push_animation(self, frames, pic_speed=200):
         """Push pre-rendered buffers as one looping device-side animation.
 
@@ -316,15 +313,11 @@ class Pixoo:
         if not frames:
             return
         if len(frames) == 1:
-            self.set_buffer(frames[0])
+            self.__buffer = list(frames[0])
             self.push()
             return
 
-        try:
-            pic_speed = int(pic_speed)
-        except (TypeError, ValueError):
-            pic_speed = 200
-        pic_speed = clamp(pic_speed, 50, 2000)
+        pic_speed = clamp_pic_speed(pic_speed)
 
         expected = self.pixel_count * 3
         valid = [frame for frame in frames if len(frame) == expected]
@@ -369,7 +362,7 @@ class Pixoo:
             # first frame as a static page so the display never freezes.
             _LOGGER.warning("Animation partial (%s/%s frames); showing first frame static.",
                             sent, total)
-            self.set_buffer(valid[0])
+            self.__buffer = list(valid[0])
             self.push()
 
     def send_text(self, text, xy=(0, 0), color=get_rgb("white"), identifier=1,
@@ -533,8 +526,7 @@ class Pixoo:
             if self.debug:
                 print('[.] Counter loaded and stored: ' + str(self.__counter))
 
-    def __send_gif_frame(self, pic_num, pic_offset, pic_id, pic_speed, frame,
-                         retries=1):
+    def __send_gif_frame(self, pic_num, pic_offset, pic_id, pic_speed, frame):
         payload = json.dumps({
             'Command': 'Draw/SendHttpGif',
             'PicNum': pic_num,
@@ -544,7 +536,7 @@ class Pixoo:
             'PicSpeed': pic_speed,
             'PicData': str(base64.b64encode(bytearray(frame)).decode())
         })
-        for attempt in range(retries + 1):
+        for attempt in (0, 1):
             try:
                 response = requests.post(self.__url, payload, timeout=self.timeout)
             except (requests.RequestException, ConnectionError, TimeoutError) as exc:
@@ -553,7 +545,7 @@ class Pixoo:
                 # ConnectionResetError, not a requests.RequestException.
                 # Retry once, then keep the previous page on screen instead of
                 # raising into the HA render loop.
-                if attempt < retries:
+                if attempt == 0:
                     _LOGGER.debug("SendHttpGif frame %s retrying after %s.", pic_offset, exc)
                     continue
                 _LOGGER.warning("SendHttpGif frame %s failed (%s); keeping previous page.",

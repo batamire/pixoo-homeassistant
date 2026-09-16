@@ -75,11 +75,9 @@ def extract_frames(img, width=None, height=None, resample_mode=Image.BOX,
         frame_count = getattr(img, "n_frames", 1) or 1
     except Exception:  # corrupt source reporting no usable frames
         frame_count = 1
-    is_animated = bool(getattr(img, "is_animated", frame_count > 1)) and frame_count > 1
 
-    if not is_animated:
-        return [apply_sizing(img)], clamp_pic_speed(
-            speed_override if speed_override is not None else DEFAULT_PIC_SPEED_MS)
+    if frame_count <= 1:
+        return [apply_sizing(img)], clamp_pic_speed(speed_override)
 
     frames = []
     delays = []
@@ -102,8 +100,7 @@ def extract_frames(img, width=None, height=None, resample_mode=Image.BOX,
                         frame_count, MAX_ANIMATION_FRAMES)
 
     if not frames:
-        return [apply_sizing(img)], clamp_pic_speed(
-            speed_override if speed_override is not None else DEFAULT_PIC_SPEED_MS)
+        return [apply_sizing(img)], clamp_pic_speed(speed_override)
 
     if speed_override is not None:
         pic_speed = clamp_pic_speed(speed_override)

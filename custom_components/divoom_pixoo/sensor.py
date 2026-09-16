@@ -18,7 +18,7 @@ from urllib3.exceptions import NewConnectionError
 
 from . import Pixoo
 from .pixoo64._colors import get_rgb, CSS4_COLORS, render_color
-from .pixoo64._gif import MAX_ANIMATION_FRAMES, clamp_pic_speed, extract_frames
+from .pixoo64._gif import extract_frames
 from .const import DOMAIN, VERSION
 from .pages._pages import special_pages
 from .pixoo64._font import FONT_PICO_8, FONT_GICKO, FIVE_PIX, ELEVEN_PIX, CLOCK, PIX24
@@ -192,42 +192,11 @@ class Pixoo64(Entity):
                 rendered_variables[var_name] = Template(str(variables[var_name]), self.hass).async_render()
 
             components: list = page['components'].copy()  # Copy the list so we can add new items to it.
-            # Animated image components are composited below, after the static
-            # pass. Frame cache is per render: templated sources may change
-            # between renders, so reset before the loop, not only for animation.
+            # Frame cache is per render: templated sources may change between
+            # renders, so reset before the loop.
             self._image_frame_cache = {}
-            animated_images = []
-            animation_speed_ms = clamp_pic_speed(None)
             for index, component in enumerate(components):
-
-                if component['type'] == "text":
-                    self._draw_text_component(pixoo, component, rendered_variables)
-
-                elif component['type'] == "image":
-                    frames, pic_speed, resample_mode = self._load_image_frames(component, rendered_variables)
-                    if not frames:
-                        continue
-                    try:
-                        animation_speed = component.get('animation_speed')
-                        animation_speed = None if animation_speed is None else int(animation_speed)
-                    except (TypeError, ValueError):
-                        animation_speed = None
-                    if len(frames) > 1:
-                        # Animated source: the replay pass below draws every
-                        # layer in z-order per frame. Only record presence and
-                        # speed here; drawing frame 0 now would be discarded.
-                        animated_images.append(True)
-                        if animation_speed is not None:
-                            animation_speed_ms = pic_speed
-                        elif animation_speed_ms == clamp_pic_speed(None):
-                            animation_speed_ms = pic_speed
-                    else:
-                        pixoo.draw_image(frames[0], tuple(component['position']),
-                                         image_resample_mode=resample_mode)
-
-                elif component['type'] == "rectangle":
-                    self._draw_rectangle_component(pixoo, component, rendered_variables)
-                elif component["type"] == "templatable":
+                if component["type"] == "templatable":
                     try:
                         rendered_list = list(Template(str(component.get("template", [])), self.hass).async_render(variables=rendered_variables))
                         for item in rendered_list[::-1]:  # Reverse the list so that the order is correct.
@@ -236,51 +205,44 @@ class Pixoo64(Entity):
                     except TemplateError as e:
                         _LOGGER.error("Template render error: %s", e)
 
-            if animated_images:
-                self._render_animated_page(pixoo, components, rendered_variables, animation_speed_ms)
-            else:
-                pixoo.push()
+            self._render_components(pixoo, components, rendered_variables)
 
-    def _render_animated_page(self, pixoo, components, rendered_variables, pic_speed):
-        """Replay every component per frame so text/rectangles draw OVER the animation.
+    def _render_components(self, pixoo, components, rendered_variables):
+        """Composite the page once per animation frame, then push it.
 
-        ``components`` is the full ordered component list. Static components
-        replay identically each frame; animated image components draw frame N.
-        Later components paint over earlier ones, exactly like the static page.
+        Every component replays for each frame, so later components paint over
+        earlier ones exactly like a static page. A page without animated images
+        renders a single frame, which ``push_animation`` sends statically.
         """
         frame_count = 1
+        pic_speed = None
         for component in components:
             if component.get('type') == "image":
-                frames = self._peek_image_frames(component, rendered_variables)
+                frames, speed, _ = self._load_image_frames(component, rendered_variables)
                 if len(frames) > 1:
                     frame_count = max(frame_count, len(frames))
-        frame_count = min(frame_count, MAX_ANIMATION_FRAMES)
-        frames = []
+                    if pic_speed is None:
+                        pic_speed = speed
+        rendered = []
         for frame_index in range(frame_count):
             pixoo.clear()
             for component in components:
                 self._draw_component_frame(pixoo, component, rendered_variables, frame_index)
-            frames.append(pixoo.get_buffer())
+            rendered.append(pixoo.get_buffer())
         pixoo.clear()
-        pixoo.push_animation(frames, pic_speed)
+        pixoo.push_animation(rendered, pic_speed)
 
     def _load_image_frames(self, component, rendered_variables):
         """Decode an image component into (frames, pic_speed, resample_mode).
 
-        Frames are cached per render: the animated replay pass calls this once
-        per frame index, but the file/URL is only fetched and decoded on the
-        first call. Returns ([], None, resample) when the component has no
-        usable source.
+        Frames are cached per render: the page is composited once per frame
+        index, but the file/URL is only fetched and decoded on the first call.
+        Returns ([], None, resample) when the component has no usable source.
         """
-        cache = getattr(self, "_image_frame_cache", None)
-        if cache is None:
-            cache = self._image_frame_cache = {}
         key = id(component)
-        if key in cache:
-            return cache[key]
-        result = self._decode_image_frames(component, rendered_variables)
-        cache[key] = result
-        return result
+        if key not in self._image_frame_cache:
+            self._image_frame_cache[key] = self._decode_image_frames(component, rendered_variables)
+        return self._image_frame_cache[key]
 
     def _decode_image_frames(self, component, rendered_variables):
         try:
@@ -343,10 +305,6 @@ class Pixoo64(Entity):
         except TimeoutError as e:
             _LOGGER.error("Timeout error: %s", e)
         return [], None, Image.BOX
-
-    def _peek_image_frames(self, component, rendered_variables):
-        """Decode an image component's frames without drawing (for frame counting)."""
-        return self._load_image_frames(component, rendered_variables)[0]
 
     def _draw_text_component(self, pixoo, component, rendered_variables):
         try:
