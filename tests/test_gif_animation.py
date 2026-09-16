@@ -226,6 +226,10 @@ class TestEncodePageGif(unittest.TestCase):
             with Image.open(dest) as gif:
                 self.assertEqual(2, getattr(gif, "n_frames", 1))
                 self.assertEqual(200, gif.info.get("duration"))
+                for index in range(2):
+                    gif.seek(index)
+                    # Full-screen frames: the device cannot composite deltas.
+                    self.assertEqual((0, 0, size, size), gif.tile[0][1])
                 gif.seek(1)
                 self.assertEqual((0, 255, 0), gif.convert("RGB").getpixel((0, 0)))
 
