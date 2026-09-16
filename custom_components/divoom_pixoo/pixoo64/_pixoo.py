@@ -1,5 +1,6 @@
 import base64
 import json
+import time
 from datetime import timedelta
 from enum import IntEnum
 
@@ -67,6 +68,9 @@ class Pixoo:
     __counter = 0
     __refresh_counter_limit = 32
     timeout = 9
+    # Pause between animation frames: the device RSTs back-to-back 16 kB
+    # posts, failing every push at ~20/30 frames. 29 x 0.15 s ~= 4.4 s/push.
+    frame_pause = 0.15
 
     def __init__(self, address, size=64, debug=False, refresh_connection_automatically=True):
         assert size in [16, 32, 64], \
@@ -350,10 +354,23 @@ class Pixoo:
         total = len(valid)
         sent = 0
         for offset, frame in enumerate(valid):
+            if offset > 0:
+                # The device resets TCP under back-to-back 16 kB frame posts.
+                # A short pause between frames keeps the burst under its limit.
+                time.sleep(self.frame_pause)
             if self.__send_gif_frame(total, offset, pic_id, pic_speed, frame):
                 sent += 1
+            else:
+                break
 
         self.__buffers_send = self.__buffers_send + sent
+        if 0 < sent < total:
+            # Partial animation leaves the device mid-sequence; re-push the
+            # first frame as a static page so the display never freezes.
+            _LOGGER.warning("Animation partial (%s/%s frames); showing first frame static.",
+                            sent, total)
+            self.set_buffer(valid[0])
+            self.push()
 
     def send_text(self, text, xy=(0, 0), color=get_rgb("white"), identifier=1,
                   font=2, width=64,
@@ -516,8 +533,9 @@ class Pixoo:
             if self.debug:
                 print('[.] Counter loaded and stored: ' + str(self.__counter))
 
-    def __send_gif_frame(self, pic_num, pic_offset, pic_id, pic_speed, frame):
-        response = requests.post(self.__url, json.dumps({
+    def __send_gif_frame(self, pic_num, pic_offset, pic_id, pic_speed, frame,
+                         retries=1):
+        payload = json.dumps({
             'Command': 'Draw/SendHttpGif',
             'PicNum': pic_num,
             'PicWidth': self.size,
@@ -525,12 +543,33 @@ class Pixoo:
             'PicID': pic_id,
             'PicSpeed': pic_speed,
             'PicData': str(base64.b64encode(bytearray(frame)).decode())
-        }), timeout=self.timeout)
-        data = response.json()
-        if data['error_code'] != 0:
-            self.__error(data)
-            return False
-        return True
+        })
+        for attempt in range(retries + 1):
+            try:
+                response = requests.post(self.__url, payload, timeout=self.timeout)
+            except (requests.RequestException, ConnectionError, TimeoutError) as exc:
+                # The device drops the TCP connection under multi-frame bursts
+                # (cf. upstream #153): urllib3 surfaces it as a raw
+                # ConnectionResetError, not a requests.RequestException.
+                # Retry once, then keep the previous page on screen instead of
+                # raising into the HA render loop.
+                if attempt < retries:
+                    _LOGGER.debug("SendHttpGif frame %s retrying after %s.", pic_offset, exc)
+                    continue
+                _LOGGER.warning("SendHttpGif frame %s failed (%s); keeping previous page.",
+                                pic_offset, exc)
+                return False
+            try:
+                data = response.json()
+            except ValueError as exc:
+                _LOGGER.warning("SendHttpGif frame %s bad response (%s); keeping previous page.",
+                                pic_offset, exc)
+                return False
+            if data.get('error_code') != 0:
+                self.__error(data)
+                return False
+            return True
+        return False
 
     def __send_buffer(self):
 

@@ -6,6 +6,7 @@ import types
 import unittest
 from io import BytesIO
 from pathlib import Path
+from unittest import mock
 
 import requests_mock
 from PIL import Image
@@ -161,7 +162,75 @@ class TestPushAnimation(unittest.TestCase):
         pixoo.push_animation([])
         self.assertEqual([], posted_commands(m))
 
+    def test_connection_reset_retries_frame(self, m):
+        m.post("/post", [
+            {"json": {"error_code": 0, "PicId": 0}},  # __init__ handshake
+            {"json": {"error_code": 0}},  # ResetHttpGifId
+            {"exc": ConnectionResetError(104, "Connection reset by peer")},
+            {"json": {"error_code": 0}},  # retry succeeds
+            {"json": {"error_code": 0}},  # frame 2
+        ])
+        pixoo = Pixoo(IP_ADDRESS)
+        m.reset_mock()
 
+        with self.assertNoLogs(level="WARNING"):
+            pixoo.push_animation([pixoo.get_buffer(), pixoo.get_buffer()])
+
+        commands = posted_commands(m)
+        frames = [cmd for cmd in commands if cmd["Command"] == "Draw/SendHttpGif"]
+        self.assertEqual(3, len(frames))  # failed frame + retry + frame 2
+        self.assertEqual([0, 0, 1], [cmd["PicOffset"] for cmd in frames])
+    def test_push_animation_paces_frames(self, m):
+        m.post("/post", json={"error_code": 0, "PicId": 0})
+        pixoo = Pixoo(IP_ADDRESS)
+        pixoo.frame_pause = 0.15
+        m.reset_mock()
+
+        with mock.patch.object(_pixoo_mod.time, "sleep") as sleep:
+            pixoo.push_animation([pixoo.get_buffer(), pixoo.get_buffer(), pixoo.get_buffer()])
+        self.assertEqual([mock.call(0.15), mock.call(0.15)], sleep.call_args_list)
+
+    def test_persistent_failure_falls_back_to_static(self, m):
+        m.post("/post", [
+            {"json": {"error_code": 0, "PicId": 0}},  # __init__ handshake
+            {"json": {"error_code": 0}},  # ResetHttpGifId
+            {"exc": ConnectionResetError(104, "Connection reset by peer")},
+            {"exc": ConnectionResetError(104, "Connection reset by peer")},
+            {"json": {"error_code": 0}},  # static fallback push
+        ])
+        pixoo = Pixoo(IP_ADDRESS)
+        m.reset_mock()
+
+        with self.assertLogs(level="WARNING"):
+            pixoo.push_animation([pixoo.get_buffer(), pixoo.get_buffer()])
+
+        commands = posted_commands(m)
+        kinds = [(cmd["Command"], cmd.get("PicNum")) for cmd in commands]
+        self.assertIn(("Draw/ResetHttpGifId", None), kinds)
+        # Frame 0 failed twice: zero frames sent, no partial-animation
+        # fallback; the next scheduled page draw recovers.
+        self.assertEqual(1, len([k for k in kinds if k[0] == "Draw/ResetHttpGifId"]))
+        self.assertEqual([], [k for k in kinds if k == ("Draw/SendHttpGif", 1)])
+
+    def test_partial_failure_falls_back_to_static(self, m):
+        m.post("/post", [
+            {"json": {"error_code": 0, "PicId": 0}},  # __init__ handshake
+            {"json": {"error_code": 0}},  # ResetHttpGifId
+            {"json": {"error_code": 0}},  # frame 0 ok
+            {"exc": ConnectionResetError(104, "Connection reset by peer")},
+            {"exc": ConnectionResetError(104, "Connection reset by peer")},
+            {"json": {"error_code": 0}},  # static fallback push
+        ])
+        pixoo = Pixoo(IP_ADDRESS)
+        m.reset_mock()
+
+        with self.assertLogs(level="WARNING"):
+            pixoo.push_animation([pixoo.get_buffer(), pixoo.get_buffer()])
+
+        commands = posted_commands(m)
+        kinds = [(cmd["Command"], cmd.get("PicNum")) for cmd in commands]
+        # Partial animation (1/2) re-pushes the first frame as a static page.
+        self.assertEqual(("Draw/SendHttpGif", 1), kinds[-1])
 @requests_mock.Mocker()
 class TestExtractFrames(unittest.TestCase):
     def test_static_image_yields_one_frame(self, m):

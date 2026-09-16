@@ -16,8 +16,9 @@ _LOGGER = logging.getLogger(__name__)
 
 # One frame costs 64*64*3 = 12288 raw bytes (~16 kB base64). Cap the frame
 # count so a single page draw cannot flood the device (cf. upstream #153,
-# device becoming unresponsive under page rotation).
-MAX_ANIMATION_FRAMES = 20
+# device becoming unresponsive under page rotation). 32 covers the 30-frame
+# weather GIF set (~0.5 MB per push, once per page duration).
+MAX_ANIMATION_FRAMES = 32
 
 # Device takes a single PicSpeed (ms per frame) for the whole animation.
 MIN_PIC_SPEED_MS = 50
