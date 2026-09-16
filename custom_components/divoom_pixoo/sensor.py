@@ -18,10 +18,10 @@ from urllib3.exceptions import NewConnectionError
 
 from . import Pixoo
 from .pixoo64._colors import get_rgb, CSS4_COLORS, render_color
+from .pixoo64._gif import clamp_pic_speed, extract_frames
 from .const import DOMAIN, VERSION
 from .pages._pages import special_pages
 from .pixoo64._font import FONT_PICO_8, FONT_GICKO, FIVE_PIX, ELEVEN_PIX, CLOCK, PIX24
-
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -192,6 +192,10 @@ class Pixoo64(Entity):
                 rendered_variables[var_name] = Template(str(variables[var_name]), self.hass).async_render()
 
             components: list = page['components'].copy()  # Copy the list so we can add new items to it.
+            # Animated image components are composited below, after the static
+            # pass: (position, frames, resample_mode) tuples, plus the page-level speed.
+            animated_images = []
+            animation_speed_ms = clamp_pic_speed(None)
             for index, component in enumerate(components):
 
                 if component['type'] == "text":
@@ -260,13 +264,31 @@ class Pixoo64(Entity):
 
                         width = component.get('width')
                         height = component.get('height')
+                        try:
+                            animation_speed = component.get('animation_speed')
+                            animation_speed = None if animation_speed is None else int(animation_speed)
+                        except (TypeError, ValueError):
+                            animation_speed = None
 
-                        if width and height:
-                            img = img.resize((width, height), resample_mode)
-                        elif width or height:
-                            img.thumbnail((100 if not width else width, 100 if not height else height), resample_mode)
-
-                        pixoo.draw_image(img, tuple(component['position']), image_resample_mode=resample_mode)
+                        frames, pic_speed = extract_frames(img, width, height, resample_mode, animation_speed)
+                        try:
+                            position = tuple(component['position'])
+                            if len(frames) > 1:
+                                # Animated source: defer compositing to the per-frame
+                                # pass below so the whole page (text included) is
+                                # baked into every pushed frame.
+                                animated_images.append((position, frames, resample_mode))
+                                if animation_speed is not None:
+                                    animation_speed_ms = pic_speed
+                                elif animation_speed_ms == clamp_pic_speed(None):
+                                    animation_speed_ms = pic_speed
+                            else:
+                                pixoo.draw_image(frames[0], position, image_resample_mode=resample_mode)
+                        finally:
+                            try:
+                                img.close()
+                            except Exception:
+                                pass
                     except TemplateError as e:
                         _LOGGER.error("Template render error: %s", e)
                     except NewConnectionError as e:
@@ -310,7 +332,24 @@ class Pixoo64(Entity):
                     except TemplateError as e:
                         _LOGGER.error("Template render error: %s", e)
 
-            pixoo.push()
+            if animated_images:
+                self._render_animated_page(pixoo, animated_images, animation_speed_ms)
+            else:
+                pixoo.push()
+
+    def _render_animated_page(self, pixoo, animated_images, pic_speed):
+        """Re-render the whole page per animation frame and push it as one loop."""
+        frame_count = min(len(frames) for _, frames, _ in animated_images)
+        static_buffer = pixoo.get_buffer()
+        frames = []
+        for frame_index in range(frame_count):
+            pixoo.set_buffer(static_buffer)
+            for position, gif_frames, resample_mode in animated_images:
+                pixoo.draw_image(gif_frames[frame_index % len(gif_frames)], position,
+                                 image_resample_mode=resample_mode)
+            frames.append(pixoo.get_buffer())
+        pixoo.set_buffer(static_buffer)
+        pixoo.push_animation(frames, pic_speed)
 
     # Service to show a message.
     async def async_show_message(self, page_data: dict, duration: int = -1):

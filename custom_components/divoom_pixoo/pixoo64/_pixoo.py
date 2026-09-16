@@ -293,6 +293,68 @@ class Pixoo:
     def push(self):
         self.__send_buffer()
 
+    def get_buffer(self):
+        """Return a copy of the current raw RGB buffer (size*size*3 ints)."""
+        return list(self.__buffer)
+
+    def set_buffer(self, buffer):
+        """Replace the current raw RGB buffer (must hold size*size*3 ints)."""
+        self.__buffer = list(buffer)
+
+    def push_animation(self, frames, pic_speed=200):
+        """Push pre-rendered buffers as one looping device-side animation.
+
+        Every entry of ``frames`` is a raw RGB buffer as returned by
+        :meth:`get_buffer`. The device loops the set in place, so static page
+        content baked into each frame stays still while animated parts move.
+        A single frame falls back to :meth:`push`.
+        """
+        if not frames:
+            return
+        if len(frames) == 1:
+            self.set_buffer(frames[0])
+            self.push()
+            return
+
+        try:
+            pic_speed = int(pic_speed)
+        except (TypeError, ValueError):
+            pic_speed = 200
+        pic_speed = clamp(pic_speed, 50, 2000)
+
+        expected = self.pixel_count * 3
+        valid = [frame for frame in frames if len(frame) == expected]
+        if not valid:
+            _LOGGER.error("Animation aborted: no frame matches the %s-byte buffer size.", expected)
+            return
+        if len(valid) != len(frames):
+            _LOGGER.warning("Dropping %s animation frame(s) with wrong buffer size.",
+                            len(frames) - len(valid))
+
+        # Consume a single PicID slot for the whole animation so the next
+        # static push cannot collide with it.
+        self.__counter = self.__counter + 1
+        if self.refresh_connection_automatically and self.__counter >= self.__refresh_counter_limit:
+            self.__counter = 1
+
+        if self.debug:
+            print(f'[.] Pushed animation of {len(valid)} frames (simulated)')
+            self.__buffers_send = self.__buffers_send + 1
+            return
+
+        # Mandatory: without ResetHttpGifId the device ACKs (error_code 0)
+        # but silently discards a multi-frame push.
+        self.__reset_counter()
+
+        pic_id = self.__counter
+        total = len(valid)
+        sent = 0
+        for offset, frame in enumerate(valid):
+            if self.__send_gif_frame(total, offset, pic_id, pic_speed, frame):
+                sent += 1
+
+        self.__buffers_send = self.__buffers_send + sent
+
     def send_text(self, text, xy=(0, 0), color=get_rgb("white"), identifier=1,
                   font=2, width=64,
                   movement_speed=0,
@@ -454,6 +516,22 @@ class Pixoo:
             if self.debug:
                 print('[.] Counter loaded and stored: ' + str(self.__counter))
 
+    def __send_gif_frame(self, pic_num, pic_offset, pic_id, pic_speed, frame):
+        response = requests.post(self.__url, json.dumps({
+            'Command': 'Draw/SendHttpGif',
+            'PicNum': pic_num,
+            'PicWidth': self.size,
+            'PicOffset': pic_offset,
+            'PicID': pic_id,
+            'PicSpeed': pic_speed,
+            'PicData': str(base64.b64encode(bytearray(frame)).decode())
+        }), timeout=self.timeout)
+        data = response.json()
+        if data['error_code'] != 0:
+            self.__error(data)
+            return False
+        return True
+
     def __send_buffer(self):
 
         # Add to the internal counter
@@ -471,23 +549,8 @@ class Pixoo:
             return
 
         # Encode the buffer to base64 encoding
-        response = requests.post(self.__url, json.dumps({
-            'Command': 'Draw/SendHttpGif',
-            'PicNum': 1,
-            'PicWidth': self.size,
-            'PicOffset': 0,
-            'PicID': self.__counter,
-            'PicSpeed': 1000,
-            'PicData': str(base64.b64encode(bytearray(self.__buffer)).decode())
-        }), timeout=self.timeout)
-        data = response.json()
-        if data['error_code'] != 0:
-            self.__error(data)
-        else:
+        if self.__send_gif_frame(1, 0, self.__counter, 1000, self.__buffer):
             self.__buffers_send = self.__buffers_send + 1
-
-            if self.debug:
-                print(f'[.] Pushed {self.__buffers_send} buffers')
 
     def __reset_counter(self):
         if self.debug:
