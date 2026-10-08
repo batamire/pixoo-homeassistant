@@ -259,6 +259,17 @@ class Pixoo64(Entity):
                 _LOGGER.error(f"Error rendering channel id template: {e}")
                 channel_id = page['id']
             pixoo.set_custom_page(channel_id)            
+        elif page_type == "panel_channel":
+            # Added 2026-10-08: switch the PANEL channel (0 faces, 1 cloud,
+            # 2 visualizer, 3 custom) via Channel/SetIndex. Upstream's "channel"
+            # page type sets a custom-gallery page (Channel/SetCustomPageIndex) and
+            # never switches the channel, so the cloud channel needs its own type.
+            try:
+                panel_channel = Template(str(page["id"]), self.hass).async_render()
+            except TemplateError as e:
+                _LOGGER.error(f"Error rendering panel channel template: {e}")
+                panel_channel = page["id"]
+            pixoo.set_channel(panel_channel)
         elif page_type == "visualizer":
             try:
                 visualizer_id = Template(str(page['id']), self.hass).async_render()
